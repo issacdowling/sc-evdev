@@ -1,7 +1,6 @@
-use std::io::BufWriter;
-use std::sync::mpsc;
-use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc::{Sender, TryRecvError};
+use std::time::SystemTime;
 use bitflags::{bitflags, bitflags_match};
 use bytemuck::{Pod, Zeroable};
 use color_eyre::eyre;
@@ -58,6 +57,7 @@ enum DaemonState {
 }
 
 bitflags! {
+    // This is actually supposed to be 64 bits long, but all buttons are already accounted for with 32 bits.
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
     struct Buttons: u32 {
@@ -101,8 +101,118 @@ fn event_time_now() -> eyre::Result<TimeVal> {
     Ok(TimeVal::new(now.as_secs() as i64, now.subsec_micros() as i64))
 }
 
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Command {
+    SetDigitalMappings = 0x80,
+    ClearDigitalMappings = 0x81,
+    GetDigitalMappings = 0x82,
+    SetDefaultMappings = 0x85,
+    SetSettings = 0x87,
+    GetSettings = 0x88,
+}
+
+
+#[derive(Debug, Clone)]
+struct SteamControllerHid {
+    device: Arc<Mutex<HidDevice>>,
+    device_info: DeviceInfo,
+}
+
+impl SteamControllerHid {
+    const FEATURE_REPORT_CMD: u8 = 0x01;
+    const SETTING_LEFT_TRACKPAD_MODE: u8 = 0x07;
+    const SETTING_RIGHT_TRACKPAD_MODE: u8 = 0x08;
+    const SETTING_LEFT_TRACKPAD_CLICK_PRESSURE: u8 = 52;
+    const SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE: u8 = 53;
+    const SETTING_STEAM_WATCHDOG_ENABLE: u8 = 71;
+
+    pub fn new(device: HidDevice) -> Self {
+        let device_info = device.get_device_info().unwrap();
+
+        SteamControllerHid {
+            device: Arc::new(Mutex::new(device)),
+            device_info,
+        }
+    }
+
+    pub fn get_device_info(&self) -> &DeviceInfo {
+        &self.device_info
+    }
+
+    pub fn read(&self, buf: &mut [u8]) -> eyre::Result<usize> {
+        let device = self.device.lock()
+            .map_err(|e| eyre::eyre!("Failed to lock device: {e}"))?;
+        let read = device.read(buf)?;
+        Ok(read)
+    }
+
+    pub fn send_command(&self, command: Command) -> eyre::Result<()> {
+        self.send_command_with_payload(command, &[])
+    }
+
+    pub fn send_command_with_payload(&self, command: Command, payload: &[u8]) -> eyre::Result<()> {
+        let size = payload.len();
+
+        let mut buf = vec![Self::FEATURE_REPORT_CMD, command as u8, size as u8];
+        buf.extend_from_slice(payload);
+
+        while buf.len() < 64 {
+            buf.push(0x00);
+        }
+
+        let device = self.device.lock()
+            .map_err(|e| eyre::eyre!("Failed to lock device: {e}"))?;
+
+        let mut retries = 50;
+        while let Err(e) = device.send_feature_report(&buf) {
+            retries -= 1;
+            if retries <=0 {
+                return Err(eyre::eyre!("Failed to send feature report after 50 retries: {}", e));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
     let (mut virtual_controller, mut device) = (None, None);
+    let controller = SteamControllerHid::new(controller);
+
+    let (write_thread_tx, rx) = mpsc::channel::<bool>();
+
+    let write_thread_params = (
+        controller.clone(),
+    );
+    let write_thread = std::thread::spawn(move || {
+        let (controller, ) = write_thread_params;
+
+        controller.send_command(Command::ClearDigitalMappings).unwrap();
+
+        loop {
+            controller.send_command_with_payload(Command::SetSettings, &[
+                0x09, 0x00, 0x00,
+            ]).unwrap();
+
+            match rx.try_recv() {
+                Ok(should_exit) => {
+                    if should_exit {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    match err {
+                        TryRecvError::Disconnected => {
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 
     let mut buf = [0u8; 1024];
 
@@ -114,11 +224,9 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
             // println!("{:?}", &buf[..read]);
 
             if virtual_controller.is_none() && device.is_none() {
-                let (v, d) = create_virtual_controller(controller.get_device_info().unwrap()).unwrap();
+                let (v, d) = create_virtual_controller(controller.get_device_info()).unwrap();
                 virtual_controller = Some(v);
                 device = Some(d);
-                
-                set_lizard_mode(&controller, false).unwrap();
             }
             let virtual_controller = virtual_controller.as_mut().unwrap();
             let device = device.as_mut().unwrap();
@@ -147,8 +255,6 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let left_joystick_y = i16::from_le_bytes(buf[12..14].try_into().unwrap());
                 let right_joystick_x = i16::from_le_bytes(buf[14..16].try_into().unwrap());
                 let right_joystick_y = i16::from_le_bytes(buf[16..18].try_into().unwrap());
-
-                // println!("Left joystick: ({}, {}), Right joystick: ({}, {})", left_joystick_x, left_joystick_y, right_joystick_x, right_joystick_y);
 
                 let time = event_time_now().unwrap();
                 device.write_event(&InputEvent {
@@ -187,67 +293,9 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
             break;
         }
     }
-}
 
-const FEATURE_REPORT_CMD: u8 = 0x01;
-const SETTING_LEFT_TRACKPAD_MODE: u8 = 0x07;
-const SETTING_RIGHT_TRACKPAD_MODE: u8 = 0x08;
-const SETTING_LEFT_TRACKPAD_CLICK_PRESSURE: u8 = 52;
-const SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE: u8 = 53;
-const SETTING_STEAM_WATCHDOG_ENABLE: u8 = 71;
-
-fn set_lizard_mode(controller: &HidDevice, enable: bool) -> eyre::Result<()> {
-    if enable {
-
-    } else {
-        send_command(&controller, Command::ClearDigitalMappings)?;
-
-        send_command_with_payload(&controller, Command::SetSettings, &[
-            SETTING_LEFT_TRACKPAD_MODE, 0x00, 0x00,
-            SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
-            SETTING_LEFT_TRACKPAD_CLICK_PRESSURE, 0xFF, 0xFF,
-            SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xFF, 0xFF,
-            SETTING_STEAM_WATCHDOG_ENABLE, 0,
-        ])?;
-    }
-
-    Ok(())
-}
-
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Command {
-    SetDigitalMappings = 0x80,
-    ClearDigitalMappings = 0x81,
-    GetDigitalMappings = 0x82,
-    SetDefaultMappings = 0x85,
-    SetSettings = 0x87,
-    GetSettings = 0x88,
-}
-
-fn send_command(controller: &HidDevice, command: Command) -> eyre::Result<()> {
-    send_command_with_payload(controller, command, &[])
-}
-
-fn send_command_with_payload(controller: &HidDevice, command: Command, payload: &[u8]) -> eyre::Result<()> {
-    let size = payload.len();
-
-    let mut buf = vec![FEATURE_REPORT_CMD, command as u8, size as u8];
-    buf.extend_from_slice(payload);
-
-    while buf.len() < 64 {
-        buf.push(0x00);
-    }
-
-    let mut retries = 50;
-    while let Err(e) = controller.send_feature_report(&buf) {
-        retries -= 1;
-        if retries <=0 {
-            return Err(eyre::eyre!("Failed to send feature report after 50 retries: {}", e));
-        }
-    }
-
-    Ok(())
+    write_thread_tx.send(true).unwrap();
+    write_thread.join().unwrap();
 }
 
 fn send_button_events(device: &UInputDevice, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
@@ -296,7 +344,7 @@ fn send_button_events(device: &UInputDevice, buttons: Buttons, pressed: bool) ->
     Ok(())
 }
 
-fn create_virtual_controller(device_info: DeviceInfo) -> eyre::Result<(UninitDevice, UInputDevice)> {
+fn create_virtual_controller(device_info: &DeviceInfo) -> eyre::Result<(UninitDevice, UInputDevice)> {
     let virtual_controller = UninitDevice::new().unwrap();
 
     virtual_controller.set_name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()));
