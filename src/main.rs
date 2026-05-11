@@ -1,0 +1,382 @@
+use std::io::BufWriter;
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant, SystemTime};
+use bitflags::{bitflags, bitflags_match};
+use bytemuck::{Pod, Zeroable};
+use color_eyre::eyre;
+use evdev_rs::{AbsInfo, DeviceWrapper, EnableCodeData, InputEvent, TimeVal, UInputDevice, UninitDevice};
+use evdev_rs::enums::{BusType, EventCode, EV_KEY, EV_ABS, EV_SYN};
+use hidapi::{DeviceInfo, HidDevice};
+
+fn main() -> eyre::Result<()> {
+    let api = hidapi::HidApi::new()?;
+
+    let mut devices: Vec<DeviceInfo> = Vec::new();
+    for device in api.device_list() {
+        if !devices.iter().any(|existing_device| existing_device.path() == device.path()) {
+            devices.push(device.clone());
+        }
+    }
+
+    let steam_controllers = devices.iter()
+        .filter(|device| device.vendor_id() == 0x28de && device.product_id() == 0x1304)
+        .cloned()
+        .collect::<Vec<DeviceInfo>>();
+
+    let mut controllers: Vec<HidDevice> = Vec::new();
+    for device in steam_controllers.iter() {
+        let steam_controller = api.open_path(device.path())?;
+        controllers.push(steam_controller);
+    }
+
+    let (tx, rx) = mpsc::channel::<DaemonState>();
+    let mut daemons_running = controllers.len();
+
+    for controller in controllers {
+        let tx = tx.clone();
+        std::thread::spawn(move || handle_controller(controller, tx));
+    }
+
+    while daemons_running > 0 {
+        match rx.recv() {
+            Ok(DaemonState::Stopped) => {
+                daemons_running -= 1;
+            },
+            Err(err) => {
+                println!("{:?}", err);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+enum DaemonState {
+    Stopped,
+}
+
+bitflags! {
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
+    struct Buttons: u32 {
+        const BTN_A = 0b00000000000000000000000000000001;
+        const BTN_B = 0b00000000000000000000000000000010;
+        const BTN_X = 0b00000000000000000000000000000100;
+        const BTN_Y = 0b000000000000000000001000;
+        const BTN_QUICK_ACCESS = 0b00000000000000000000000000010000;
+        const BTN_THUMBR = 0b00000000000000000000000000100000;
+        const BTN_SELECT = 0b00000000000000000000000001000000;
+        const BTN_R4 = 0b00000000000000000000000010000000;
+        const BTN_R5 = 0b00000000000000000000000100000000;
+        const BTN_R1 = 0b00000000000000000000001000000000;
+        const BTN_DPAD_DOWN = 0b00000000000000000000010000000000;
+        const BTN_DPAD_RIGHT = 0b00000000000000000000100000000000;
+        const BTN_DPAD_LEFT = 0b00000000000000000001000000000000;
+        const BTN_DPAD_UP = 0b00000000000000000010000000000000;
+        const BTN_START = 0b00000000000000000100000000000000;
+        const BTN_THUMBL = 0b00000000000000001000000000000000;
+        const BTN_STEAM = 0b00000000000000010000000000000000;
+        const BTN_L4 = 0b00000000000000100000000000000000;
+        const BTN_L5 = 0b00000000000001000000000000000000;
+        const BTN_L1 = 0b00000000000010000000000000000000;
+        const BTN_THUMBR_TOUCH = 0b00000000000100000000000000000000;
+        const BTN_RIGHT_PAD_TOUCH = 0b00000000001000000000000000000000;
+        const BTN_RIGHT_PAD_CLICK = 0b00000000010000000000000000000000;
+        const BTN_R2 = 0b00000000100000000000000000000000;
+        const BTN_THUMBL_TOUCH = 0b00000001000000000000000000000000;
+        const BTN_LEFT_PAD_TOUCH = 0b00000010000000000000000000000000;
+        const BTN_LEFT_PAD_CLICK = 0b00000100000000000000000000000000;
+        const BTN_L2 = 0b00001000000000000000000000000000;
+        const BTN_GRIPR = 0b00010000000000000000000000000000;
+        const BTN_GRIPL = 0b00100000000000000000000000000000;
+        const BTN_UNKNOWN_1 = 0b01000000000000000000000000000000;
+        const BTN_UNKNOWN_2 = 0b10000000000000000000000000000000;
+    }
+}
+
+fn event_time_now() -> eyre::Result<TimeVal> {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+    Ok(TimeVal::new(now.as_secs() as i64, now.subsec_micros() as i64))
+}
+
+fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
+    let (mut virtual_controller, mut device) = (None, None);
+
+    let mut buf = [0u8; 1024];
+
+    let mut last_button_state = Buttons::empty();
+
+    loop {
+        let read = controller.read(&mut buf);
+        if let Ok(read) = read {
+            // println!("{:?}", &buf[..read]);
+
+            if virtual_controller.is_none() && device.is_none() {
+                let (v, d) = create_virtual_controller(controller.get_device_info().unwrap()).unwrap();
+                virtual_controller = Some(v);
+                device = Some(d);
+                
+                set_lizard_mode(&controller, false).unwrap();
+            }
+            let virtual_controller = virtual_controller.as_mut().unwrap();
+            let device = device.as_mut().unwrap();
+
+            let report_id = buf[0];
+
+            if report_id == 66 {
+                let buttons_u32 = u32::from_le_bytes(buf[2..6].try_into().unwrap());
+
+                let buttons = Buttons::from_bits_truncate(buttons_u32);
+
+                let released = last_button_state.difference(buttons);
+                let pressed = buttons.difference(last_button_state);
+                last_button_state = buttons;
+
+                if !pressed.is_empty() || !released.is_empty() {
+                    released.iter().for_each(|button| {
+                        send_button_events(&device, button, false).unwrap();
+                    });
+                    pressed.iter().for_each(|button| {
+                        send_button_events(&device, button, true).unwrap();
+                    });
+                }
+
+                let left_joystick_x = i16::from_le_bytes(buf[10..12].try_into().unwrap());
+                let left_joystick_y = i16::from_le_bytes(buf[12..14].try_into().unwrap());
+                let right_joystick_x = i16::from_le_bytes(buf[14..16].try_into().unwrap());
+                let right_joystick_y = i16::from_le_bytes(buf[16..18].try_into().unwrap());
+
+                // println!("Left joystick: ({}, {}), Right joystick: ({}, {})", left_joystick_x, left_joystick_y, right_joystick_x, right_joystick_y);
+
+                let time = event_time_now().unwrap();
+                device.write_event(&InputEvent {
+                    time,
+                    event_code: EventCode::EV_ABS(EV_ABS::ABS_X),
+                    value: left_joystick_x as i32,
+                }).unwrap();
+                device.write_event(&InputEvent {
+                    time,
+                    event_code: EventCode::EV_ABS(EV_ABS::ABS_Y),
+                    value: -left_joystick_y as i32,
+                }).unwrap();
+                device.write_event(&InputEvent {
+                    time,
+                    event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
+                    value: right_joystick_x as i32,
+                }).unwrap();
+                device.write_event(&InputEvent {
+                    time,
+                    event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
+                    value: -right_joystick_y as i32,
+                }).unwrap();
+            }
+
+            let time = event_time_now().unwrap();
+            device.write_event(&InputEvent {
+                time,
+                event_code: EventCode::EV_SYN(EV_SYN::SYN_REPORT),
+                value: 0,
+            }).unwrap();
+
+        } else {
+            println!("{:?}", read);
+
+            tx.send(DaemonState::Stopped).unwrap();
+            break;
+        }
+    }
+}
+
+const FEATURE_REPORT_CMD: u8 = 0x01;
+const SETTING_LEFT_TRACKPAD_MODE: u8 = 0x07;
+const SETTING_RIGHT_TRACKPAD_MODE: u8 = 0x08;
+const SETTING_LEFT_TRACKPAD_CLICK_PRESSURE: u8 = 52;
+const SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE: u8 = 53;
+const SETTING_STEAM_WATCHDOG_ENABLE: u8 = 71;
+
+fn set_lizard_mode(controller: &HidDevice, enable: bool) -> eyre::Result<()> {
+    if enable {
+
+    } else {
+        send_command(&controller, Command::ClearDigitalMappings)?;
+
+        send_command_with_payload(&controller, Command::SetSettings, &[
+            SETTING_LEFT_TRACKPAD_MODE, 0x00, 0x00,
+            SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
+            SETTING_LEFT_TRACKPAD_CLICK_PRESSURE, 0xFF, 0xFF,
+            SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xFF, 0xFF,
+            SETTING_STEAM_WATCHDOG_ENABLE, 0,
+        ])?;
+    }
+
+    Ok(())
+}
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Command {
+    SetDigitalMappings = 0x80,
+    ClearDigitalMappings = 0x81,
+    GetDigitalMappings = 0x82,
+    SetDefaultMappings = 0x85,
+    SetSettings = 0x87,
+    GetSettings = 0x88,
+}
+
+fn send_command(controller: &HidDevice, command: Command) -> eyre::Result<()> {
+    send_command_with_payload(controller, command, &[])
+}
+
+fn send_command_with_payload(controller: &HidDevice, command: Command, payload: &[u8]) -> eyre::Result<()> {
+    let size = payload.len();
+
+    let mut buf = vec![FEATURE_REPORT_CMD, command as u8, size as u8];
+    buf.extend_from_slice(payload);
+
+    while buf.len() < 64 {
+        buf.push(0x00);
+    }
+
+    let mut retries = 50;
+    while let Err(e) = controller.send_feature_report(&buf) {
+        retries -= 1;
+        if retries <=0 {
+            return Err(eyre::eyre!("Failed to send feature report after 50 retries: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+fn send_button_events(device: &UInputDevice, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
+    let time = event_time_now()?;
+
+    let event = bitflags_match!(buttons, {
+        Buttons::BTN_A => Some(EV_KEY::BTN_SOUTH),
+        Buttons::BTN_B => Some(EV_KEY::BTN_EAST),
+        Buttons::BTN_X => Some(EV_KEY::BTN_WEST),
+        Buttons::BTN_Y => Some(EV_KEY::BTN_NORTH),
+        Buttons::BTN_R1 => Some(EV_KEY::BTN_TR),
+        Buttons::BTN_L1 => Some(EV_KEY::BTN_TL),
+        Buttons::BTN_R2 => Some(EV_KEY::BTN_TR2),
+        Buttons::BTN_L2 => Some(EV_KEY::BTN_TL2),
+        Buttons::BTN_R4 => Some(EV_KEY::BTN_0),
+        Buttons::BTN_L4 => Some(EV_KEY::BTN_1),
+        Buttons::BTN_R5 => Some(EV_KEY::BTN_2),
+        Buttons::BTN_L5 => Some(EV_KEY::BTN_3),
+        Buttons::BTN_RIGHT_PAD_CLICK => Some(EV_KEY::BTN_4),
+        Buttons::BTN_LEFT_PAD_CLICK => Some(EV_KEY::BTN_5),
+        Buttons::BTN_GRIPR => Some(EV_KEY::KEY_BRIGHTNESSDOWN),
+        Buttons::BTN_GRIPL => Some(EV_KEY::KEY_BRIGHTNESSUP),
+        Buttons::BTN_THUMBL => Some(EV_KEY::BTN_THUMBL),
+        Buttons::BTN_THUMBR => Some(EV_KEY::BTN_THUMBR),
+        Buttons::BTN_DPAD_UP => Some(EV_KEY::BTN_DPAD_UP),
+        Buttons::BTN_DPAD_DOWN => Some(EV_KEY::BTN_DPAD_DOWN),
+        Buttons::BTN_DPAD_LEFT => Some(EV_KEY::BTN_DPAD_LEFT),
+        Buttons::BTN_DPAD_RIGHT => Some(EV_KEY::BTN_DPAD_RIGHT),
+        Buttons::BTN_START => Some(EV_KEY::BTN_START),
+        Buttons::BTN_SELECT => Some(EV_KEY::BTN_SELECT),
+        Buttons::BTN_STEAM => Some(EV_KEY::BTN_MODE),
+        Buttons::BTN_QUICK_ACCESS => Some(EV_KEY::BTN_BASE),
+        _ => None,
+    });
+
+    if let Some(event) = event {
+        let value = if pressed { 1 } else { 0 };
+
+        device.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_KEY(event),
+            value,
+        })?;
+    }
+
+    Ok(())
+}
+
+fn create_virtual_controller(device_info: DeviceInfo) -> eyre::Result<(UninitDevice, UInputDevice)> {
+    let virtual_controller = UninitDevice::new().unwrap();
+
+    virtual_controller.set_name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()));
+    virtual_controller.set_bustype(BusType::BUS_USB as u16);
+    virtual_controller.set_vendor_id(0x28de);
+    virtual_controller.set_product_id(0x1304);
+
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TR2))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TL2))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TR))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TL))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_SOUTH))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_EAST))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_WEST))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_NORTH))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_0))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_1))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_2))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_3))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_4))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_5))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSDOWN))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSUP))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_UP))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_RIGHT))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_LEFT))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_DOWN))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_SELECT))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_BASE))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_MODE))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_START))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBR))?;
+    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBL))?;
+
+    let abs_info = AbsInfo {
+        value: 0,
+        minimum: -32767,
+        maximum: 32767,
+        fuzz: 0,
+        flat: 0,
+        resolution: 6553,
+    };
+    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+
+    let abs_info = AbsInfo {
+        value: 0,
+        minimum: -32767,
+        maximum: 32767,
+        fuzz: 256,
+        flat: 0,
+        resolution: 0,
+    };
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0X), &abs_info);
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0Y), &abs_info);
+
+    let abs_info = AbsInfo {
+        value: 0,
+        minimum: -32767,
+        maximum: 32767,
+        fuzz: 256,
+        flat: 0,
+        resolution: 1638,
+    };
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1X), &abs_info);
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1Y), &abs_info);
+
+    let abs_info = AbsInfo {
+        value: 0,
+        minimum: 0,
+        maximum: 32767,
+        fuzz: 0,
+        flat: 0,
+        resolution: 5461,
+    };
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2X), &abs_info);
+    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2Y), &abs_info);
+
+    let input = UInputDevice::create_from_device(&virtual_controller)?;
+    Ok((virtual_controller, input))
+}
