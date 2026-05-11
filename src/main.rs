@@ -5,7 +5,7 @@ use bitflags::{bitflags, bitflags_match};
 use bytemuck::{Pod, Zeroable};
 use color_eyre::eyre;
 use evdev_rs::{AbsInfo, DeviceWrapper, EnableCodeData, InputEvent, TimeVal, UInputDevice, UninitDevice};
-use evdev_rs::enums::{BusType, EventCode, EV_KEY, EV_ABS, EV_SYN};
+use evdev_rs::enums::{BusType, EventCode, EV_KEY, EV_ABS, EV_SYN, EV_MSC};
 use hidapi::{DeviceInfo, HidDevice};
 
 fn main() -> eyre::Result<()> {
@@ -110,6 +110,9 @@ enum Command {
     SetDefaultMappings = 0x85,
     SetSettings = 0x87,
     GetSettings = 0x88,
+    Unknown1 = 0xe2,
+    Unknown2 = 0xdc,
+    Unknown3 = 0xc1,
 }
 
 
@@ -177,7 +180,7 @@ impl SteamControllerHid {
 }
 
 fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
-    let (mut virtual_controller, mut device) = (None, None);
+    let mut virtual_controller = None;
     let controller = SteamControllerHid::new(controller);
 
     let (write_thread_tx, rx) = mpsc::channel::<bool>();
@@ -190,7 +193,96 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
 
         controller.send_command(Command::ClearDigitalMappings).unwrap();
 
+        // Maybe enable gyro?
+
+        // controller.send_command_with_payload(Command::Unknown3, &[
+        //     0x00, 0x01, 0x02, 0x03,
+        //     0x04, 0x05, 0x06, 0x07,
+        //     0x08, 0x09, 0x0a, 0x0b,
+        //     0x0c, 0x0d, 0x0e, 0x0f,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x30, 0x18, 0x00,
+        //     0x07, 0x07, 0x00,
+        //     0x08, 0x07, 0x00,
+        //     0x31, 0x02, 0x00,
+        //     0x52, 0x03, 0x00,
+        // ]).unwrap();
+        controller.send_command_with_payload(Command::SetSettings, &[
+            0x18, 0x00, 0x00,
+            0x2e, 0x00, 0x00,
+            0x34, 0xff, 0xff,
+            0x35, 0xff, 0xff,
+            0x2e, 0x00, 0x00,
+        ]).unwrap();
+
+        // controller.send_command_with_payload(Command::Unknown2, &[
+        //     0x01, 0x02,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::Unknown1, &[
+        //     0x01, 0x20,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x22, 0x64, 0x00,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x23, 0x50, 0x00,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::Unknown3, &[
+        //     0xff, 0xff, 0xff, 0xff,
+        //     0x03, 0x09, 0x05, 0xff,
+        //     0xff, 0xff, 0xff, 0xff,
+        //     0xff, 0xff, 0xff, 0xff,
+        // ]).unwrap();
+        //
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x30, 0x00, 0x00,
+        //     0x07, 0x07, 0x00,
+        //     0x08, 0x07, 0x00,
+        //     0x31, 0x02, 0x00,
+        //     0x52, 0x03, 0x00,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x18, 0x00, 0x00,
+        //     0x34, 0x0a, 0x00,
+        //     0x35, 0x0a, 0x00,
+        //     0x2e, 0x00, 0x00,
+        //     0x2e, 0x00, 0x00,
+        // ]).unwrap();
+
+
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x34, 0xff, 0xff,
+        //     0x35, 0xff, 0xff,
+        // ]).unwrap();
+
+
+
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x18, 0x00, 0x00,
+        //     0x34, 0x0a, 0x00,
+        //     0x35, 0x0a, 0x00,
+        //     0x2e, 0x00, 0x00,
+        //     0x2e, 0x00, 0x00, 0x00,
+        // ]).unwrap();
+        //
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x30, 0x00, 0x00,
+        //     0x07, 0x07, 0x00,
+        //     0x08, 0x07, 0x00,
+        //     0x31, 0x02, 0x00,
+        //     0x52, 0x03, 0x00, 0x00,
+        // ]).unwrap();
+        // controller.send_command_with_payload(Command::SetSettings, &[
+        //     0x30, 0x00, 0x00,
+        //     0x07, 0x07, 0x00,
+        //     0x08, 0x07, 0x00,
+        //     0x31, 0x02, 0x00,
+        //     0x52, 0x03, 0x00, 0x00,
+        // ]).unwrap();
+
         loop {
+            // Disable lizard mode.
             controller.send_command_with_payload(Command::SetSettings, &[
                 0x09, 0x00, 0x00,
             ]).unwrap();
@@ -223,13 +315,10 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
         if let Ok(read) = read {
             // println!("{:?}", &buf[..read]);
 
-            if virtual_controller.is_none() && device.is_none() {
-                let (v, d) = create_virtual_controller(controller.get_device_info()).unwrap();
-                virtual_controller = Some(v);
-                device = Some(d);
+            if virtual_controller.is_none() {
+                virtual_controller = Some(VirtualController::new(&controller.get_device_info()).unwrap());
             }
             let virtual_controller = virtual_controller.as_mut().unwrap();
-            let device = device.as_mut().unwrap();
 
             let report_id = buf[0];
 
@@ -244,10 +333,10 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
 
                 if !pressed.is_empty() || !released.is_empty() {
                     released.iter().for_each(|button| {
-                        send_button_events(&device, button, false).unwrap();
+                        virtual_controller.send_button_events(button, false).unwrap();
                     });
                     pressed.iter().for_each(|button| {
-                        send_button_events(&device, button, true).unwrap();
+                        virtual_controller.send_button_events(button, true).unwrap();
                     });
                 }
 
@@ -256,36 +345,40 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let right_joystick_x = i16::from_le_bytes(buf[14..16].try_into().unwrap());
                 let right_joystick_y = i16::from_le_bytes(buf[16..18].try_into().unwrap());
 
-                let time = event_time_now().unwrap();
-                device.write_event(&InputEvent {
-                    time,
-                    event_code: EventCode::EV_ABS(EV_ABS::ABS_X),
-                    value: left_joystick_x as i32,
-                }).unwrap();
-                device.write_event(&InputEvent {
-                    time,
-                    event_code: EventCode::EV_ABS(EV_ABS::ABS_Y),
-                    value: -left_joystick_y as i32,
-                }).unwrap();
-                device.write_event(&InputEvent {
-                    time,
-                    event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
-                    value: right_joystick_x as i32,
-                }).unwrap();
-                device.write_event(&InputEvent {
-                    time,
-                    event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
-                    value: -right_joystick_y as i32,
-                }).unwrap();
+                virtual_controller.send_joystick_events(left_joystick_x, left_joystick_y, right_joystick_x, right_joystick_y).unwrap();
+
+                let left_pad_x = i16::from_le_bytes(buf[18..20].try_into().unwrap());
+                let left_pad_y = i16::from_le_bytes(buf[20..22].try_into().unwrap());
+                let left_pad_pressure = i16::from_le_bytes(buf[22..24].try_into().unwrap());
+
+                let right_pad_x = i16::from_le_bytes(buf[24..26].try_into().unwrap());
+                let right_pad_y = i16::from_le_bytes(buf[26..28].try_into().unwrap());
+                let right_pad_pressure = i16::from_le_bytes(buf[28..30].try_into().unwrap());
+
+                // Not sure if this is actually the accelerometer.
+                let accel_x = i16::from_le_bytes(buf[30..32].try_into().unwrap());
+                let accel_y = i16::from_le_bytes(buf[32..34].try_into().unwrap());
+                let accel_z = i16::from_le_bytes(buf[34..36].try_into().unwrap());
+                // println!("Accel: {:?} {:?} {:?}", accel_x, accel_y, accel_z);
+
+                let gyro_x = i16::from_le_bytes(buf[36..38].try_into().unwrap());
+                let gyro_y = i16::from_le_bytes(buf[38..40].try_into().unwrap());
+                let gyro_z = i16::from_le_bytes(buf[40..42].try_into().unwrap());
+
+                // Copied from https://github.com/torvalds/linux/blob/5d6919055dec134de3c40167a490f33c74c12581/drivers/hid/hid-steam.c#L1686
+                virtual_controller.motion_sensor_timestamp_us += 4000;
+
+                // TODO: Figure out the other sensors
+                virtual_controller.send_motion_sensor_events(
+                    gyro_x, gyro_y, gyro_z,
+                ).unwrap();
+
+                // println!("{:?}", &buf[42..read]);
+            } else {
+                // println!("{:?}", &buf[..read]);
             }
 
-            let time = event_time_now().unwrap();
-            device.write_event(&InputEvent {
-                time,
-                event_code: EventCode::EV_SYN(EV_SYN::SYN_REPORT),
-                value: 0,
-            }).unwrap();
-
+            virtual_controller.sync().unwrap();
         } else {
             println!("{:?}", read);
 
@@ -298,133 +391,262 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
     write_thread.join().unwrap();
 }
 
-fn send_button_events(device: &UInputDevice, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
-    let time = event_time_now()?;
-
-    let event = bitflags_match!(buttons, {
-        Buttons::BTN_A => Some(EV_KEY::BTN_SOUTH),
-        Buttons::BTN_B => Some(EV_KEY::BTN_EAST),
-        Buttons::BTN_X => Some(EV_KEY::BTN_WEST),
-        Buttons::BTN_Y => Some(EV_KEY::BTN_NORTH),
-        Buttons::BTN_R1 => Some(EV_KEY::BTN_TR),
-        Buttons::BTN_L1 => Some(EV_KEY::BTN_TL),
-        Buttons::BTN_R2 => Some(EV_KEY::BTN_TR2),
-        Buttons::BTN_L2 => Some(EV_KEY::BTN_TL2),
-        Buttons::BTN_R4 => Some(EV_KEY::BTN_0),
-        Buttons::BTN_L4 => Some(EV_KEY::BTN_1),
-        Buttons::BTN_R5 => Some(EV_KEY::BTN_2),
-        Buttons::BTN_L5 => Some(EV_KEY::BTN_3),
-        Buttons::BTN_RIGHT_PAD_CLICK => Some(EV_KEY::BTN_4),
-        Buttons::BTN_LEFT_PAD_CLICK => Some(EV_KEY::BTN_5),
-        Buttons::BTN_GRIPR => Some(EV_KEY::KEY_BRIGHTNESSDOWN),
-        Buttons::BTN_GRIPL => Some(EV_KEY::KEY_BRIGHTNESSUP),
-        Buttons::BTN_THUMBL => Some(EV_KEY::BTN_THUMBL),
-        Buttons::BTN_THUMBR => Some(EV_KEY::BTN_THUMBR),
-        Buttons::BTN_DPAD_UP => Some(EV_KEY::BTN_DPAD_UP),
-        Buttons::BTN_DPAD_DOWN => Some(EV_KEY::BTN_DPAD_DOWN),
-        Buttons::BTN_DPAD_LEFT => Some(EV_KEY::BTN_DPAD_LEFT),
-        Buttons::BTN_DPAD_RIGHT => Some(EV_KEY::BTN_DPAD_RIGHT),
-        Buttons::BTN_START => Some(EV_KEY::BTN_START),
-        Buttons::BTN_SELECT => Some(EV_KEY::BTN_SELECT),
-        Buttons::BTN_STEAM => Some(EV_KEY::BTN_MODE),
-        Buttons::BTN_QUICK_ACCESS => Some(EV_KEY::BTN_BASE),
-        _ => None,
-    });
-
-    if let Some(event) = event {
-        let value = if pressed { 1 } else { 0 };
-
-        device.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_KEY(event),
-            value,
-        })?;
-    }
-
-    Ok(())
+#[derive(Debug)]
+struct VirtualController {
+    gamepad_init: UninitDevice,
+    gamepad: UInputDevice,
+    motion_sensors_init: UninitDevice,
+    motion_sensors: UInputDevice,
+    motion_sensor_timestamp_us: i32,
 }
 
-fn create_virtual_controller(device_info: &DeviceInfo) -> eyre::Result<(UninitDevice, UInputDevice)> {
-    let virtual_controller = UninitDevice::new().unwrap();
+impl VirtualController {
+    pub fn new(device_info: &DeviceInfo) -> eyre::Result<Self> {
+        let gamepad_init = UninitDevice::new().unwrap();
+        gamepad_init.set_name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()));
+        gamepad_init.set_bustype(device_info.bus_type() as u16);
+        gamepad_init.set_vendor_id(device_info.vendor_id());
+        gamepad_init.set_product_id(device_info.product_id());
+        gamepad_init.set_uniq(device_info.serial_number().unwrap());
+        gamepad_init.set_version(device_info.release_number());
 
-    virtual_controller.set_name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()));
-    virtual_controller.set_bustype(BusType::BUS_USB as u16);
-    virtual_controller.set_vendor_id(0x28de);
-    virtual_controller.set_product_id(0x1304);
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TR2))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TL2))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TR))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TL))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_SOUTH))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_EAST))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_WEST))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_NORTH))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_0))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_1))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_2))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_3))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_4))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_5))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSDOWN))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSUP))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_UP))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_RIGHT))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_LEFT))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_DOWN))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_SELECT))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_BASE))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_MODE))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_START))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBR))?;
+        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBL))?;
 
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TR2))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TL2))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TR))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_TL))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_SOUTH))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_EAST))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_WEST))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_NORTH))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_0))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_1))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_2))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_3))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_4))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_5))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSDOWN))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSUP))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_UP))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_RIGHT))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_LEFT))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_DOWN))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_SELECT))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_BASE))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_MODE))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_START))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBR))?;
-    virtual_controller.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBL))?;
+        let abs_info = AbsInfo {
+            value: 0,
+            minimum: -32767,
+            maximum: 32767,
+            fuzz: 0,
+            flat: 0,
+            resolution: 6553,
+        };
+        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
 
-    let abs_info = AbsInfo {
-        value: 0,
-        minimum: -32767,
-        maximum: 32767,
-        fuzz: 0,
-        flat: 0,
-        resolution: 6553,
-    };
-    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-    virtual_controller.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+        let abs_info = AbsInfo {
+            value: 0,
+            minimum: -32767,
+            maximum: 32767,
+            fuzz: 256,
+            flat: 0,
+            resolution: 0,
+        };
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0X), &abs_info);
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0Y), &abs_info);
 
-    let abs_info = AbsInfo {
-        value: 0,
-        minimum: -32767,
-        maximum: 32767,
-        fuzz: 256,
-        flat: 0,
-        resolution: 0,
-    };
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0X), &abs_info);
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0Y), &abs_info);
+        let abs_info = AbsInfo {
+            value: 0,
+            minimum: -32767,
+            maximum: 32767,
+            fuzz: 256,
+            flat: 0,
+            resolution: 1638,
+        };
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1X), &abs_info);
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1Y), &abs_info);
 
-    let abs_info = AbsInfo {
-        value: 0,
-        minimum: -32767,
-        maximum: 32767,
-        fuzz: 256,
-        flat: 0,
-        resolution: 1638,
-    };
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1X), &abs_info);
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1Y), &abs_info);
+        let abs_info = AbsInfo {
+            value: 0,
+            minimum: 0,
+            maximum: 32767,
+            fuzz: 0,
+            flat: 0,
+            resolution: 5461,
+        };
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2X), &abs_info);
+        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2Y), &abs_info);
 
-    let abs_info = AbsInfo {
-        value: 0,
-        minimum: 0,
-        maximum: 32767,
-        fuzz: 0,
-        flat: 0,
-        resolution: 5461,
-    };
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2X), &abs_info);
-    virtual_controller.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2Y), &abs_info);
+        let gamepad = UInputDevice::create_from_device(&gamepad_init)?;
 
-    let input = UInputDevice::create_from_device(&virtual_controller)?;
-    Ok((virtual_controller, input))
+        let motion_sensors_init = UninitDevice::new().unwrap();
+        motion_sensors_init.set_name(&format!("Steam Controller (Motion Sensors) (evdev wrapper for {:?})", device_info.path()));
+        motion_sensors_init.set_bustype(device_info.bus_type() as u16);
+        motion_sensors_init.set_vendor_id(device_info.vendor_id());
+        motion_sensors_init.set_product_id(device_info.product_id());
+        motion_sensors_init.set_uniq(device_info.serial_number().unwrap());
+        motion_sensors_init.set_version(device_info.release_number());
+
+        motion_sensors_init.enable_event_code(&EventCode::EV_MSC(EV_MSC::MSC_TIMESTAMP), None)?;
+
+        let accel_abs_info = AbsInfo {
+            value: 0,
+            minimum: -32768,
+            maximum: 32768,
+            fuzz: 32,
+            flat: 0,
+            resolution: 16384,
+        };
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Z), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
+
+        let gyro_abs_info = AbsInfo {
+            value: 0,
+            minimum: -32768,
+            maximum: 32768,
+            fuzz: 1,
+            flat: 0,
+            resolution: 16,
+        };
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
+        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RZ), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
+
+        let motion_sensors = UInputDevice::create_from_device(&motion_sensors_init)?;
+
+        Ok(
+            VirtualController {
+                gamepad_init,
+                gamepad,
+                motion_sensors_init,
+                motion_sensors,
+                motion_sensor_timestamp_us: 0,
+            }
+        )
+    }
+
+    pub fn send_button_events(&self, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
+        let time = event_time_now()?;
+
+        let event = bitflags_match!(buttons, {
+            Buttons::BTN_A => Some(EV_KEY::BTN_SOUTH),
+            Buttons::BTN_B => Some(EV_KEY::BTN_EAST),
+            Buttons::BTN_X => Some(EV_KEY::BTN_WEST),
+            Buttons::BTN_Y => Some(EV_KEY::BTN_NORTH),
+            Buttons::BTN_R1 => Some(EV_KEY::BTN_TR),
+            Buttons::BTN_L1 => Some(EV_KEY::BTN_TL),
+            Buttons::BTN_R2 => Some(EV_KEY::BTN_TR2),
+            Buttons::BTN_L2 => Some(EV_KEY::BTN_TL2),
+            Buttons::BTN_R4 => Some(EV_KEY::BTN_0),
+            Buttons::BTN_L4 => Some(EV_KEY::BTN_1),
+            Buttons::BTN_R5 => Some(EV_KEY::BTN_2),
+            Buttons::BTN_L5 => Some(EV_KEY::BTN_3),
+            Buttons::BTN_RIGHT_PAD_CLICK => Some(EV_KEY::BTN_4),
+            Buttons::BTN_LEFT_PAD_CLICK => Some(EV_KEY::BTN_5),
+            Buttons::BTN_GRIPR => Some(EV_KEY::KEY_BRIGHTNESSDOWN),
+            Buttons::BTN_GRIPL => Some(EV_KEY::KEY_BRIGHTNESSUP),
+            Buttons::BTN_THUMBL => Some(EV_KEY::BTN_THUMBL),
+            Buttons::BTN_THUMBR => Some(EV_KEY::BTN_THUMBR),
+            Buttons::BTN_DPAD_UP => Some(EV_KEY::BTN_DPAD_UP),
+            Buttons::BTN_DPAD_DOWN => Some(EV_KEY::BTN_DPAD_DOWN),
+            Buttons::BTN_DPAD_LEFT => Some(EV_KEY::BTN_DPAD_LEFT),
+            Buttons::BTN_DPAD_RIGHT => Some(EV_KEY::BTN_DPAD_RIGHT),
+            Buttons::BTN_START => Some(EV_KEY::BTN_START),
+            Buttons::BTN_SELECT => Some(EV_KEY::BTN_SELECT),
+            Buttons::BTN_STEAM => Some(EV_KEY::BTN_MODE),
+            Buttons::BTN_QUICK_ACCESS => Some(EV_KEY::BTN_BASE),
+            _ => None,
+        });
+
+        if let Some(event) = event {
+            let value = if pressed { 1 } else { 0 };
+
+            self.gamepad.write_event(&InputEvent {
+                time,
+                event_code: EventCode::EV_KEY(event),
+                value,
+            })?;
+        }
+
+        Ok(())
+    }
+
+    pub fn send_joystick_events(&self, left_joystick_x: i16, left_joystick_y: i16, right_joystick_x: i16, right_joystick_y: i16) -> eyre::Result<()> {
+        let time = event_time_now()?;
+
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_X),
+            value: left_joystick_x as i32,
+        })?;
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_Y),
+            value: -left_joystick_y as i32,
+        })?;
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
+            value: right_joystick_x as i32,
+        })?;
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
+            value: -right_joystick_y as i32,
+        })?;
+
+        Ok(())
+    }
+
+    pub fn send_motion_sensor_events(
+        &self,
+        gyro_x: i16,
+        gyro_y: i16,
+        gyro_z: i16,
+    ) -> eyre::Result<()> {
+        let time = event_time_now()?;
+
+        self.motion_sensors.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_MSC(EV_MSC::MSC_TIMESTAMP),
+            value: self.motion_sensor_timestamp_us,
+        })?;
+
+        self.motion_sensors.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
+            value: gyro_x as i32,
+        })?;
+        self.motion_sensors.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
+            value: gyro_y as i32,
+        })?;
+        self.motion_sensors.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_RZ),
+            value: gyro_z as i32,
+        })?;
+
+        Ok(())
+    }
+
+    pub fn sync(&self) -> eyre::Result<()> {
+        let time = event_time_now()?;
+
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_SYN(EV_SYN::SYN_REPORT),
+            value: 0,
+        })?;
+
+        Ok(())
+    }
 }
