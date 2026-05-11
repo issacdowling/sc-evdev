@@ -366,7 +366,7 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let gyro_z = i16::from_le_bytes(buf[40..42].try_into().unwrap());
 
                 // Copied from https://github.com/torvalds/linux/blob/5d6919055dec134de3c40167a490f33c74c12581/drivers/hid/hid-steam.c#L1686
-                virtual_controller.motion_sensor_timestamp_us += 4000;
+                virtual_controller.increment_motion_sensor_timestamp(4000);
 
                 // TODO: Figure out the other sensors
                 virtual_controller.send_motion_sensor_events(
@@ -603,6 +603,15 @@ impl VirtualController {
         })?;
 
         Ok(())
+    }
+
+    pub fn increment_motion_sensor_timestamp(&mut self, delta_us: i32) {
+        if let Some(motion_sensor_timestamp_us) = self.motion_sensor_timestamp_us.checked_add(delta_us) {
+            self.motion_sensor_timestamp_us = motion_sensor_timestamp_us;
+        } else {
+            // Hopefully doing this won't break anything, I have no idea what else to do.
+            self.motion_sensor_timestamp_us = 0;
+        }
     }
 
     pub fn send_motion_sensor_events(
