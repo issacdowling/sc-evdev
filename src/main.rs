@@ -5,7 +5,7 @@ use bitflags::{bitflags, bitflags_match};
 use bytemuck::{Pod, Zeroable};
 use color_eyre::eyre;
 use evdev_rs::{AbsInfo, DeviceWrapper, EnableCodeData, InputEvent, TimeVal, UInputDevice, UninitDevice};
-use evdev_rs::enums::{BusType, EventCode, EV_KEY, EV_ABS, EV_SYN, EV_MSC};
+use evdev_rs::enums::{EventCode, EV_KEY, EV_ABS, EV_SYN, EV_MSC, EV_FF};
 use hidapi::{DeviceInfo, HidDevice};
 
 fn main() -> eyre::Result<()> {
@@ -287,6 +287,11 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let right_pad_y = i16_from_le_bytes_steam(&buf[26..28]).unwrap();
                 let right_pad_pressure = i16_from_le_bytes_steam(&buf[28..30]).unwrap();
 
+                virtual_controller.send_pad_events(
+                    left_pad_x, left_pad_y, left_pad_pressure,
+                    right_pad_x, right_pad_y, right_pad_pressure,
+                ).unwrap();
+
                 // Not sure if this is actually the accelerometer.
                 let accel_x = i16_from_le_bytes_steam(&buf[30..32]).unwrap();
                 let accel_y = i16_from_le_bytes_steam(&buf[32..34]).unwrap();
@@ -392,15 +397,15 @@ impl VirtualController {
         };
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0X), &abs_info);
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0Y), &abs_info);
-
-        let abs_info = AbsInfo {
-            value: 0,
-            minimum: -32767,
-            maximum: 32767,
-            fuzz: 256,
-            flat: 0,
-            resolution: 1638,
-        };
+        //
+        // let abs_info = AbsInfo {
+        //     value: 0,
+        //     minimum: -32767,
+        //     maximum: 32767,
+        //     fuzz: 256,
+        //     flat: 0,
+        //     resolution: 1638,
+        // };
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1X), &abs_info);
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1Y), &abs_info);
 
@@ -414,6 +419,10 @@ impl VirtualController {
         };
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2X), &abs_info);
         gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2Y), &abs_info);
+
+        gamepad_init.enable(EventCode::EV_FF(EV_FF::FF_RUMBLE))?;
+        gamepad_init.raw();
+
 
         let gamepad = UInputDevice::create_from_device(&gamepad_init)?;
 
@@ -532,6 +541,42 @@ impl VirtualController {
             time,
             event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
             value: -right_joystick_y as i32,
+        })?;
+
+        Ok(())
+    }
+
+    pub fn send_pad_events(
+        &self,
+        left_pad_x: i16,
+        left_pad_y: i16,
+        left_pad_pressure: i16,
+        right_pad_x: i16,
+        right_pad_y: i16,
+        right_pad_pressure: i16,
+    ) -> eyre::Result<()> {
+        let time = event_time_now()?;
+
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT0X),
+            value: left_pad_x as i32,
+        })?;
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT0Y),
+            value: left_pad_y as i32,
+        })?;
+
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT1X),
+            value: right_pad_x as i32,
+        })?;
+        self.gamepad.write_event(&InputEvent {
+            time,
+            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT1Y),
+            value: right_pad_y as i32,
         })?;
 
         Ok(())
