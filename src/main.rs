@@ -179,6 +179,17 @@ impl SteamControllerHid {
     }
 }
 
+// copied from https://github.com/torvalds/linux/blob/50897c955902c93ae71c38698abb910525ebdc89/drivers/hid/hid-steam.c#L1357
+fn i16_from_le_bytes_steam(bytes: &[u8]) -> eyre::Result<i16> {
+    let mut short = i16::from_le_bytes(bytes.try_into()?);
+
+    if short == i16::MIN {
+        short = i16::MIN + 1;
+    }
+
+    Ok(short)
+}
+
 fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
     let mut virtual_controller = None;
     let controller = SteamControllerHid::new(controller);
@@ -193,21 +204,7 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
 
         controller.send_command(Command::ClearDigitalMappings).unwrap();
 
-        // Maybe enable gyro?
-
-        // controller.send_command_with_payload(Command::Unknown3, &[
-        //     0x00, 0x01, 0x02, 0x03,
-        //     0x04, 0x05, 0x06, 0x07,
-        //     0x08, 0x09, 0x0a, 0x0b,
-        //     0x0c, 0x0d, 0x0e, 0x0f,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x30, 0x18, 0x00,
-        //     0x07, 0x07, 0x00,
-        //     0x08, 0x07, 0x00,
-        //     0x31, 0x02, 0x00,
-        //     0x52, 0x03, 0x00,
-        // ]).unwrap();
+        // Enable Motion Sensors.
         controller.send_command_with_payload(Command::SetSettings, &[
             0x18, 0x00, 0x00,
             0x2e, 0x00, 0x00,
@@ -215,71 +212,6 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
             0x35, 0xff, 0xff,
             0x2e, 0x00, 0x00,
         ]).unwrap();
-
-        // controller.send_command_with_payload(Command::Unknown2, &[
-        //     0x01, 0x02,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::Unknown1, &[
-        //     0x01, 0x20,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x22, 0x64, 0x00,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x23, 0x50, 0x00,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::Unknown3, &[
-        //     0xff, 0xff, 0xff, 0xff,
-        //     0x03, 0x09, 0x05, 0xff,
-        //     0xff, 0xff, 0xff, 0xff,
-        //     0xff, 0xff, 0xff, 0xff,
-        // ]).unwrap();
-        //
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x30, 0x00, 0x00,
-        //     0x07, 0x07, 0x00,
-        //     0x08, 0x07, 0x00,
-        //     0x31, 0x02, 0x00,
-        //     0x52, 0x03, 0x00,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x18, 0x00, 0x00,
-        //     0x34, 0x0a, 0x00,
-        //     0x35, 0x0a, 0x00,
-        //     0x2e, 0x00, 0x00,
-        //     0x2e, 0x00, 0x00,
-        // ]).unwrap();
-
-
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x34, 0xff, 0xff,
-        //     0x35, 0xff, 0xff,
-        // ]).unwrap();
-
-
-
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x18, 0x00, 0x00,
-        //     0x34, 0x0a, 0x00,
-        //     0x35, 0x0a, 0x00,
-        //     0x2e, 0x00, 0x00,
-        //     0x2e, 0x00, 0x00, 0x00,
-        // ]).unwrap();
-        //
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x30, 0x00, 0x00,
-        //     0x07, 0x07, 0x00,
-        //     0x08, 0x07, 0x00,
-        //     0x31, 0x02, 0x00,
-        //     0x52, 0x03, 0x00, 0x00,
-        // ]).unwrap();
-        // controller.send_command_with_payload(Command::SetSettings, &[
-        //     0x30, 0x00, 0x00,
-        //     0x07, 0x07, 0x00,
-        //     0x08, 0x07, 0x00,
-        //     0x31, 0x02, 0x00,
-        //     0x52, 0x03, 0x00, 0x00,
-        // ]).unwrap();
 
         loop {
             // Disable lizard mode.
@@ -340,30 +272,30 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                     });
                 }
 
-                let left_joystick_x = i16::from_le_bytes(buf[10..12].try_into().unwrap());
-                let left_joystick_y = i16::from_le_bytes(buf[12..14].try_into().unwrap());
-                let right_joystick_x = i16::from_le_bytes(buf[14..16].try_into().unwrap());
-                let right_joystick_y = i16::from_le_bytes(buf[16..18].try_into().unwrap());
+                let left_joystick_x = i16_from_le_bytes_steam(&buf[10..12]).unwrap();
+                let left_joystick_y = i16_from_le_bytes_steam(&buf[12..14]).unwrap();
+                let right_joystick_x = i16_from_le_bytes_steam(&buf[14..16]).unwrap();
+                let right_joystick_y = i16_from_le_bytes_steam(&buf[16..18]).unwrap();
 
                 virtual_controller.send_joystick_events(left_joystick_x, left_joystick_y, right_joystick_x, right_joystick_y).unwrap();
 
-                let left_pad_x = i16::from_le_bytes(buf[18..20].try_into().unwrap());
-                let left_pad_y = i16::from_le_bytes(buf[20..22].try_into().unwrap());
-                let left_pad_pressure = i16::from_le_bytes(buf[22..24].try_into().unwrap());
+                let left_pad_x = i16_from_le_bytes_steam(&buf[18..20]).unwrap();
+                let left_pad_y = i16_from_le_bytes_steam(&buf[20..22]).unwrap();
+                let left_pad_pressure = i16_from_le_bytes_steam(&buf[22..24]).unwrap();
 
-                let right_pad_x = i16::from_le_bytes(buf[24..26].try_into().unwrap());
-                let right_pad_y = i16::from_le_bytes(buf[26..28].try_into().unwrap());
-                let right_pad_pressure = i16::from_le_bytes(buf[28..30].try_into().unwrap());
+                let right_pad_x = i16_from_le_bytes_steam(&buf[24..26]).unwrap();
+                let right_pad_y = i16_from_le_bytes_steam(&buf[26..28]).unwrap();
+                let right_pad_pressure = i16_from_le_bytes_steam(&buf[28..30]).unwrap();
 
                 // Not sure if this is actually the accelerometer.
-                let accel_x = i16::from_le_bytes(buf[30..32].try_into().unwrap());
-                let accel_y = i16::from_le_bytes(buf[32..34].try_into().unwrap());
-                let accel_z = i16::from_le_bytes(buf[34..36].try_into().unwrap());
+                let accel_x = i16_from_le_bytes_steam(&buf[30..32]).unwrap();
+                let accel_y = i16_from_le_bytes_steam(&buf[32..34]).unwrap();
+                let accel_z = i16_from_le_bytes_steam(&buf[34..36]).unwrap();
                 // println!("Accel: {:?} {:?} {:?}", accel_x, accel_y, accel_z);
 
-                let gyro_x = i16::from_le_bytes(buf[36..38].try_into().unwrap());
-                let gyro_y = i16::from_le_bytes(buf[38..40].try_into().unwrap());
-                let gyro_z = i16::from_le_bytes(buf[40..42].try_into().unwrap());
+                let gyro_x = i16_from_le_bytes_steam(&buf[36..38]).unwrap();
+                let gyro_y = i16_from_le_bytes_steam(&buf[38..40]).unwrap();
+                let gyro_z = i16_from_le_bytes_steam(&buf[40..42]).unwrap();
 
                 // Copied from https://github.com/torvalds/linux/blob/5d6919055dec134de3c40167a490f33c74c12581/drivers/hid/hid-steam.c#L1686
                 virtual_controller.increment_motion_sensor_timestamp(4000);
