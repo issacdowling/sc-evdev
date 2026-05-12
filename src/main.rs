@@ -4,8 +4,9 @@ use std::time::SystemTime;
 use bitflags::{bitflags, bitflags_match};
 use bytemuck::{Pod, Zeroable};
 use color_eyre::eyre;
-use evdev_rs::{AbsInfo, DeviceWrapper, EnableCodeData, InputEvent, TimeVal, UInputDevice, UninitDevice};
-use evdev_rs::enums::{EventCode, EV_KEY, EV_ABS, EV_SYN, EV_MSC, EV_FF};
+use evdev::{AbsoluteAxisCode, AbsoluteAxisEvent, AttributeSet, BusType, FFEffect, FFEffectCode, InputId, KeyCode, KeyEvent, MiscCode, MiscEvent, SynchronizationCode, SynchronizationEvent, UinputAbsSetup};
+use evdev::uinput::VirtualDevice;
+
 use hidapi::{DeviceInfo, HidDevice};
 
 fn main() -> eyre::Result<()> {
@@ -96,10 +97,10 @@ bitflags! {
     }
 }
 
-fn event_time_now() -> eyre::Result<TimeVal> {
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
-    Ok(TimeVal::new(now.as_secs() as i64, now.subsec_micros() as i64))
-}
+// fn event_time_now() -> eyre::Result<TimeVal> {
+//     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+//     Ok(TimeVal::new(now.as_secs() as i64, now.subsec_micros() as i64))
+// }
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -302,9 +303,6 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let gyro_y = i16_from_le_bytes_steam(&buf[38..40]).unwrap();
                 let gyro_z = i16_from_le_bytes_steam(&buf[40..42]).unwrap();
 
-                // Copied from https://github.com/torvalds/linux/blob/5d6919055dec134de3c40167a490f33c74c12581/drivers/hid/hid-steam.c#L1686
-                virtual_controller.increment_motion_sensor_timestamp(4000);
-
                 // TODO: Figure out the other sensors
                 virtual_controller.send_motion_sensor_events(
                     gyro_x, gyro_y, gyro_z,
@@ -330,224 +328,169 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
 
 #[derive(Debug)]
 struct VirtualController {
-    gamepad_init: UninitDevice,
-    gamepad: UInputDevice,
-    motion_sensors_init: UninitDevice,
-    motion_sensors: UInputDevice,
+    gamepad: VirtualDevice,
+    motion_sensors: VirtualDevice,
     motion_sensor_timestamp_us: i32,
 }
 
 impl VirtualController {
     pub fn new(device_info: &DeviceInfo) -> eyre::Result<Self> {
-        let gamepad_init = UninitDevice::new().unwrap();
-        gamepad_init.set_name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()));
-        gamepad_init.set_bustype(device_info.bus_type() as u16);
-        gamepad_init.set_vendor_id(device_info.vendor_id());
-        gamepad_init.set_product_id(device_info.product_id());
-        gamepad_init.set_uniq(device_info.serial_number().unwrap());
-        gamepad_init.set_version(device_info.release_number());
+        let mut buttons = AttributeSet::<KeyCode>::new();
+        buttons.insert(KeyCode::BTN_TR2);
+        buttons.insert(KeyCode::BTN_TL2);
+        buttons.insert(KeyCode::BTN_TR);
+        buttons.insert(KeyCode::BTN_TL);
+        buttons.insert(KeyCode::BTN_SOUTH);
+        buttons.insert(KeyCode::BTN_EAST);
+        buttons.insert(KeyCode::BTN_WEST);
+        buttons.insert(KeyCode::BTN_NORTH);
+        buttons.insert(KeyCode::BTN_0);
+        buttons.insert(KeyCode::BTN_1);
+        buttons.insert(KeyCode::BTN_2);
+        buttons.insert(KeyCode::BTN_3);
+        buttons.insert(KeyCode::BTN_4);
+        buttons.insert(KeyCode::BTN_5);
+        buttons.insert(KeyCode::BTN_6);
+        buttons.insert(KeyCode::BTN_7);
+        buttons.insert(KeyCode::BTN_DPAD_UP);
+        buttons.insert(KeyCode::BTN_DPAD_RIGHT);
+        buttons.insert(KeyCode::BTN_DPAD_LEFT);
+        buttons.insert(KeyCode::BTN_DPAD_DOWN);
+        buttons.insert(KeyCode::BTN_SELECT);
+        buttons.insert(KeyCode::BTN_BASE);
+        buttons.insert(KeyCode::BTN_MODE);
+        buttons.insert(KeyCode::BTN_START);
+        buttons.insert(KeyCode::BTN_THUMBR);
+        buttons.insert(KeyCode::BTN_THUMBL);
 
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TR2))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TL2))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TR))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_TL))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_SOUTH))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_EAST))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_WEST))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_NORTH))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_0))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_1))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_2))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_3))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_4))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_5))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSDOWN))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::KEY_BRIGHTNESSUP))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_UP))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_RIGHT))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_LEFT))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_DPAD_DOWN))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_SELECT))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_BASE))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_MODE))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_START))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBR))?;
-        gamepad_init.enable(EventCode::EV_KEY(EV_KEY::BTN_THUMBL))?;
+        let abs_info = evdev::AbsInfo::new(0, -32767, 32767, 0, 0, 6553);
+        let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_info);
+        let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_info);
+        let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_info);
+        let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_info);
 
-        let abs_info = AbsInfo {
-            value: 0,
-            minimum: -32767,
-            maximum: 32767,
-            fuzz: 0,
-            flat: 0,
-            resolution: 6553,
-        };
-        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
-        gamepad_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(abs_info.clone())))?;
+        let abs_info = evdev::AbsInfo::new(0, -32767, 32767, 256, 0, 0);
+        let abs_hat0x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, abs_info);
+        let abs_hat0y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, abs_info);
+        let abs_hat1x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT1X, abs_info);
+        let abs_hat1y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT1Y, abs_info);
 
-        let abs_info = AbsInfo {
-            value: 0,
-            minimum: -32767,
-            maximum: 32767,
-            fuzz: 256,
-            flat: 0,
-            resolution: 0,
-        };
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0X), &abs_info);
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT0Y), &abs_info);
-        //
-        // let abs_info = AbsInfo {
-        //     value: 0,
-        //     minimum: -32767,
-        //     maximum: 32767,
-        //     fuzz: 256,
-        //     flat: 0,
-        //     resolution: 1638,
-        // };
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1X), &abs_info);
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT1Y), &abs_info);
+        let abs_info = evdev::AbsInfo::new(0, 0, 32767, 0, 0, 5461);
+        let abs_hat2x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT2X, abs_info);
+        let abs_hat2y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT2Y, abs_info);
 
-        let abs_info = AbsInfo {
-            value: 0,
-            minimum: 0,
-            maximum: 32767,
-            fuzz: 0,
-            flat: 0,
-            resolution: 5461,
-        };
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2X), &abs_info);
-        gamepad_init.set_abs_info(&EventCode::EV_ABS(EV_ABS::ABS_HAT2Y), &abs_info);
+        let input_id = InputId::new(
+            BusType(device_info.bus_type() as u16),
+            device_info.vendor_id(),
+            device_info.product_id(),
+            device_info.release_number(),
+        );
 
-        gamepad_init.enable(EventCode::EV_FF(EV_FF::FF_RUMBLE))?;
-        gamepad_init.raw();
+        let gamepad = VirtualDevice::builder()?
+            .name(&format!("Steam Controller (evdev wrapper for {:?})", device_info.path()))
+            .input_id(input_id.clone())
+            .with_phys(device_info.path())?
+            .with_keys(&buttons)?
+            .with_absolute_axis(&abs_x)?
+            .with_absolute_axis(&abs_y)?
+            .with_absolute_axis(&abs_rx)?
+            .with_absolute_axis(&abs_ry)?
+            .with_absolute_axis(&abs_hat0x)?
+            .with_absolute_axis(&abs_hat0y)?
+            .with_absolute_axis(&abs_hat1x)?
+            .with_absolute_axis(&abs_hat1y)?
+            .with_absolute_axis(&abs_hat2x)?
+            .with_absolute_axis(&abs_hat2y)?
+            .with_ff(&AttributeSet::from_iter([FFEffectCode::FF_RUMBLE]))?
+            .with_ff_effects_max(32)
+            .build()?;
 
+        let abs_info = evdev::AbsInfo::new(0, -32768, 32768, 32, 0, 16384);
+        let accel_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_info);
+        let accel_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_info);
+        let accel_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_info);
 
-        let gamepad = UInputDevice::create_from_device(&gamepad_init)?;
+        let abs_info = evdev::AbsInfo::new(0, -32768, 32768, 1, 0, 16);
+        let gyro_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_info);
+        let gyro_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_info);
+        let gyro_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_info);
 
-        let motion_sensors_init = UninitDevice::new().unwrap();
-        motion_sensors_init.set_name(&format!("Steam Controller (Motion Sensors) (evdev wrapper for {:?})", device_info.path()));
-        motion_sensors_init.set_bustype(device_info.bus_type() as u16);
-        motion_sensors_init.set_vendor_id(device_info.vendor_id());
-        motion_sensors_init.set_product_id(device_info.product_id());
-        motion_sensors_init.set_uniq(device_info.serial_number().unwrap());
-        motion_sensors_init.set_version(device_info.release_number());
-
-        motion_sensors_init.enable_event_code(&EventCode::EV_MSC(EV_MSC::MSC_TIMESTAMP), None)?;
-
-        let accel_abs_info = AbsInfo {
-            value: 0,
-            minimum: -32768,
-            maximum: 32768,
-            fuzz: 32,
-            flat: 0,
-            resolution: 16384,
-        };
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_X), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Y), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_Z), Some(EnableCodeData::AbsInfo(accel_abs_info)))?;
-
-        let gyro_abs_info = AbsInfo {
-            value: 0,
-            minimum: -32768,
-            maximum: 32768,
-            fuzz: 1,
-            flat: 0,
-            resolution: 16,
-        };
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RX), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RY), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
-        motion_sensors_init.enable_event_code(&EventCode::EV_ABS(EV_ABS::ABS_RZ), Some(EnableCodeData::AbsInfo(gyro_abs_info)))?;
-
-        let motion_sensors = UInputDevice::create_from_device(&motion_sensors_init)?;
+        let motion_sensors = VirtualDevice::builder()?
+            .name(&format!("Steam Controller (Motion Sensors) (evdev wrapper for {:?})", device_info.path()))
+            .input_id(input_id)
+            .with_phys(device_info.path())?
+            .with_msc(&AttributeSet::from_iter([MiscCode::MSC_TIMESTAMP]))?
+            .with_absolute_axis(&accel_x)?
+            .with_absolute_axis(&accel_y)?
+            .with_absolute_axis(&accel_z)?
+            .with_absolute_axis(&gyro_x)?
+            .with_absolute_axis(&gyro_y)?
+            .with_absolute_axis(&gyro_z)?
+            .build()?;
 
         Ok(
             VirtualController {
-                gamepad_init,
                 gamepad,
-                motion_sensors_init,
                 motion_sensors,
                 motion_sensor_timestamp_us: 0,
             }
         )
     }
 
-    pub fn send_button_events(&self, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
-        let time = event_time_now()?;
-
-        let event = bitflags_match!(buttons, {
-            Buttons::BTN_A => Some(EV_KEY::BTN_SOUTH),
-            Buttons::BTN_B => Some(EV_KEY::BTN_EAST),
-            Buttons::BTN_X => Some(EV_KEY::BTN_WEST),
-            Buttons::BTN_Y => Some(EV_KEY::BTN_NORTH),
-            Buttons::BTN_R1 => Some(EV_KEY::BTN_TR),
-            Buttons::BTN_L1 => Some(EV_KEY::BTN_TL),
-            Buttons::BTN_R2 => Some(EV_KEY::BTN_TR2),
-            Buttons::BTN_L2 => Some(EV_KEY::BTN_TL2),
-            Buttons::BTN_R4 => Some(EV_KEY::BTN_0),
-            Buttons::BTN_L4 => Some(EV_KEY::BTN_1),
-            Buttons::BTN_R5 => Some(EV_KEY::BTN_2),
-            Buttons::BTN_L5 => Some(EV_KEY::BTN_3),
-            Buttons::BTN_RIGHT_PAD_CLICK => Some(EV_KEY::BTN_4),
-            Buttons::BTN_LEFT_PAD_CLICK => Some(EV_KEY::BTN_5),
-            Buttons::BTN_GRIPR => Some(EV_KEY::KEY_BRIGHTNESSDOWN),
-            Buttons::BTN_GRIPL => Some(EV_KEY::KEY_BRIGHTNESSUP),
-            Buttons::BTN_THUMBL => Some(EV_KEY::BTN_THUMBL),
-            Buttons::BTN_THUMBR => Some(EV_KEY::BTN_THUMBR),
-            Buttons::BTN_DPAD_UP => Some(EV_KEY::BTN_DPAD_UP),
-            Buttons::BTN_DPAD_DOWN => Some(EV_KEY::BTN_DPAD_DOWN),
-            Buttons::BTN_DPAD_LEFT => Some(EV_KEY::BTN_DPAD_LEFT),
-            Buttons::BTN_DPAD_RIGHT => Some(EV_KEY::BTN_DPAD_RIGHT),
-            Buttons::BTN_START => Some(EV_KEY::BTN_START),
-            Buttons::BTN_SELECT => Some(EV_KEY::BTN_SELECT),
-            Buttons::BTN_STEAM => Some(EV_KEY::BTN_MODE),
-            Buttons::BTN_QUICK_ACCESS => Some(EV_KEY::BTN_BASE),
+    pub fn send_button_events(&mut self, buttons: Buttons, pressed: bool) -> eyre::Result<()> {
+        let key_code = bitflags_match!(buttons, {
+            Buttons::BTN_A => Some(KeyCode::BTN_SOUTH),
+            Buttons::BTN_B => Some(KeyCode::BTN_EAST),
+            Buttons::BTN_X => Some(KeyCode::BTN_WEST),
+            Buttons::BTN_Y => Some(KeyCode::BTN_NORTH),
+            Buttons::BTN_R1 => Some(KeyCode::BTN_TR),
+            Buttons::BTN_L1 => Some(KeyCode::BTN_TL),
+            Buttons::BTN_R2 => Some(KeyCode::BTN_TR2),
+            Buttons::BTN_L2 => Some(KeyCode::BTN_TL2),
+            Buttons::BTN_R4 => Some(KeyCode::BTN_0),
+            Buttons::BTN_L4 => Some(KeyCode::BTN_1),
+            Buttons::BTN_R5 => Some(KeyCode::BTN_2),
+            Buttons::BTN_L5 => Some(KeyCode::BTN_3),
+            Buttons::BTN_RIGHT_PAD_CLICK => Some(KeyCode::BTN_4),
+            Buttons::BTN_LEFT_PAD_CLICK => Some(KeyCode::BTN_5),
+            Buttons::BTN_GRIPR => Some(KeyCode::BTN_6),
+            Buttons::BTN_GRIPL => Some(KeyCode::BTN_7),
+            Buttons::BTN_THUMBL => Some(KeyCode::BTN_THUMBL),
+            Buttons::BTN_THUMBR => Some(KeyCode::BTN_THUMBR),
+            Buttons::BTN_DPAD_UP => Some(KeyCode::BTN_DPAD_UP),
+            Buttons::BTN_DPAD_DOWN => Some(KeyCode::BTN_DPAD_DOWN),
+            Buttons::BTN_DPAD_LEFT => Some(KeyCode::BTN_DPAD_LEFT),
+            Buttons::BTN_DPAD_RIGHT => Some(KeyCode::BTN_DPAD_RIGHT),
+            Buttons::BTN_START => Some(KeyCode::BTN_START),
+            Buttons::BTN_SELECT => Some(KeyCode::BTN_SELECT),
+            Buttons::BTN_STEAM => Some(KeyCode::BTN_MODE),
+            Buttons::BTN_QUICK_ACCESS => Some(KeyCode::BTN_BASE),
             _ => None,
         });
 
-        if let Some(event) = event {
+        if let Some(key_code) = key_code {
             let value = if pressed { 1 } else { 0 };
-
-            self.gamepad.write_event(&InputEvent {
-                time,
-                event_code: EventCode::EV_KEY(event),
-                value,
-            })?;
+            self.gamepad.emit(&[*KeyEvent::new(key_code, value)])?;
         }
 
         Ok(())
     }
 
-    pub fn send_joystick_events(&self, left_joystick_x: i16, left_joystick_y: i16, right_joystick_x: i16, right_joystick_y: i16) -> eyre::Result<()> {
-        let time = event_time_now()?;
+    pub fn send_joystick_events(&mut self, left_joystick_x: i16, left_joystick_y: i16, right_joystick_x: i16, right_joystick_y: i16) -> eyre::Result<()> {
+        let axis_events = vec![
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_X, left_joystick_x as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_Y, -left_joystick_y as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_RX, right_joystick_x as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_RY, -right_joystick_y as i32),
+        ];
 
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_X),
-            value: left_joystick_x as i32,
-        })?;
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_Y),
-            value: -left_joystick_y as i32,
-        })?;
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
-            value: right_joystick_x as i32,
-        })?;
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
-            value: -right_joystick_y as i32,
-        })?;
+        self.gamepad.emit(&axis_events)?;
 
         Ok(())
     }
 
     pub fn send_pad_events(
-        &self,
+        &mut self,
         left_pad_x: i16,
         left_pad_y: i16,
         left_pad_pressure: i16,
@@ -555,29 +498,14 @@ impl VirtualController {
         right_pad_y: i16,
         right_pad_pressure: i16,
     ) -> eyre::Result<()> {
-        let time = event_time_now()?;
+        let pad_events = vec![
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0X, left_pad_x as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT0Y, left_pad_y as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT1X, right_pad_x as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_HAT1Y, right_pad_y as i32),
+        ];
 
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT0X),
-            value: left_pad_x as i32,
-        })?;
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT0Y),
-            value: left_pad_y as i32,
-        })?;
-
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT1X),
-            value: right_pad_x as i32,
-        })?;
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_HAT1Y),
-            value: right_pad_y as i32,
-        })?;
+        self.gamepad.emit(&pad_events)?;
 
         Ok(())
     }
@@ -586,52 +514,35 @@ impl VirtualController {
         if let Some(motion_sensor_timestamp_us) = self.motion_sensor_timestamp_us.checked_add(delta_us) {
             self.motion_sensor_timestamp_us = motion_sensor_timestamp_us;
         } else {
-            // Hopefully doing this won't break anything, I have no idea what else to do.
+            // Hopefully doing this won't break anything; I have no idea what else to do.
             self.motion_sensor_timestamp_us = 0;
         }
     }
 
     pub fn send_motion_sensor_events(
-        &self,
+        &mut self,
         gyro_x: i16,
         gyro_y: i16,
         gyro_z: i16,
     ) -> eyre::Result<()> {
-        let time = event_time_now()?;
+        // Copied from https://github.com/torvalds/linux/blob/5d6919055dec134de3c40167a490f33c74c12581/drivers/hid/hid-steam.c#L1686
+        self.increment_motion_sensor_timestamp(4000);
 
-        self.motion_sensors.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_MSC(EV_MSC::MSC_TIMESTAMP),
-            value: self.motion_sensor_timestamp_us,
-        })?;
+        let motion_events = vec![
+            *MiscEvent::new(MiscCode::MSC_TIMESTAMP, self.motion_sensor_timestamp_us),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_RX, gyro_x as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_RY, gyro_y as i32),
+            *AbsoluteAxisEvent::new(AbsoluteAxisCode::ABS_RZ, gyro_z as i32),
+        ];
 
-        self.motion_sensors.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_RX),
-            value: gyro_x as i32,
-        })?;
-        self.motion_sensors.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_RY),
-            value: gyro_y as i32,
-        })?;
-        self.motion_sensors.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_ABS(EV_ABS::ABS_RZ),
-            value: gyro_z as i32,
-        })?;
+        self.motion_sensors.emit(&motion_events)?;
 
         Ok(())
     }
 
-    pub fn sync(&self) -> eyre::Result<()> {
-        let time = event_time_now()?;
-
-        self.gamepad.write_event(&InputEvent {
-            time,
-            event_code: EventCode::EV_SYN(EV_SYN::SYN_REPORT),
-            value: 0,
-        })?;
+    pub fn sync(&mut self) -> eyre::Result<()> {
+        self.gamepad.emit(&[*SynchronizationEvent::new(SynchronizationCode::SYN_REPORT, 0)])?;
+        self.motion_sensors.emit(&[*SynchronizationEvent::new(SynchronizationCode::SYN_REPORT, 0)])?;
 
         Ok(())
     }

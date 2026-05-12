@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-evdev-rs = "0.6.3"
 hidapi = "2.6.5"
 color-eyre = "0.6.5"
 bitflags = { version = "2.11.1", features = ["bytemuck"] }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 uhid-virt = "0.0.8"
+
+[dependencies.evdev]
+git = "https://github.com/emberian/evdev.git"
+rev = "c4547a1aff8e713f3341165385d76fb909d30445"
