@@ -1,4 +1,5 @@
-use std::sync::{mpsc, Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::sync::mpsc::{Sender, TryRecvError};
 use std::thread;
 use color_eyre::eyre;
@@ -69,11 +70,18 @@ enum Command {
     Unknown3 = 0xc1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RumbleEffect {
+    pub left_strength: u16,
+    pub right_strength: u16,
+}
+
 
 #[derive(Debug, Clone)]
 struct SteamControllerHid {
     device: Arc<Mutex<HidDevice>>,
     device_info: DeviceInfo,
+    rumble_effects: Arc<RwLock<HashMap<i16, RumbleEffect>>>,
 }
 
 impl SteamControllerHid {
@@ -90,6 +98,7 @@ impl SteamControllerHid {
         SteamControllerHid {
             device: Arc::new(Mutex::new(device)),
             device_info,
+            rumble_effects: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -132,7 +141,26 @@ impl SteamControllerHid {
         Ok(())
     }
 
+    pub fn add_rumble_effect(&mut self, id: i16, rumble_effect: RumbleEffect) {
+        let mut rumble_effects = self.rumble_effects.write().unwrap();
+        rumble_effects.insert(id, rumble_effect);
+    }
+
+    pub fn remove_rumble_effect(&mut self, id: i16) {
+        let mut rumble_effects = self.rumble_effects.write().unwrap();
+        rumble_effects.remove(&id);
+    }
+
+    pub fn process_rumble_effects(&self) {
+        let rumble_effects = self.rumble_effects.read().unwrap();
+        for (id, rumble_effect) in rumble_effects.iter() {
+            self.send_rumble(rumble_effect.left_strength, rumble_effect.right_strength).unwrap();
+        }
+    }
+
     pub fn send_rumble(&self, left_rumble: u16, right_rumble: u16) -> eyre::Result<()> {
+        // println!("Sending rumble: {:04x} {:04x}", left_rumble, right_rumble);
+
         let device = self.device.lock()
             .map_err(|e| eyre::eyre!("Failed to lock device: {e}"))?;
         device.write(&[
@@ -144,11 +172,6 @@ impl SteamControllerHid {
             0, // Right Gain
             0x00,
         ])?;
-
-
-        // self.send_command_with_payload(Command::Rumble, &[
-        //
-        // ])?;
 
         Ok(())
     }
@@ -194,6 +217,8 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 0x09, 0x00, 0x00,
             ]).unwrap();
 
+            controller.process_rumble_effects();
+
             match rx.try_recv() {
                 Ok(should_exit) => {
                     if should_exit {
@@ -209,7 +234,7 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                     }
                 }
             }
-            thread::sleep(std::time::Duration::from_millis(500));
+            thread::sleep(std::time::Duration::from_millis(50));
         }
     });
 

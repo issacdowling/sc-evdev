@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bitflags::bitflags;
 use color_eyre::eyre;
 use uhid_virt::{Bus, CreateParams, OutputEvent, UHIDDevice};
+use crate::{RumbleEffect, SteamControllerHid};
 use crate::virtual_controllers::JoystickXY;
 
 const REPORT_DESCRIPTOR: [u8; 273] = [
@@ -333,7 +334,7 @@ pub struct VirtualDualSenseController {
 }
 
 impl VirtualDualSenseController {
-    pub fn new() -> eyre::Result<VirtualDualSenseController> {
+    pub fn new(steam_controller: &SteamControllerHid) -> eyre::Result<VirtualDualSenseController> {
         let rd_data = REPORT_DESCRIPTOR.to_vec();
         let create_params = CreateParams {
             name: "Wireless Controller".to_string(),
@@ -352,6 +353,7 @@ impl VirtualDualSenseController {
         let (tx, rx) = mpsc::channel::<bool>();
 
         let read_device = uhid_device.clone();
+        let mut steam_controller = steam_controller.clone();
         let read_handle = thread::spawn(move || {
             loop {
                 match rx.try_recv() {
@@ -387,7 +389,27 @@ impl VirtualDualSenseController {
                             println!("Close event received");
                         }
                         OutputEvent::Output { data } => {
-                            // println!("Output event received with data: {:?}", data);
+                            println!("Output event received with data: {:?}", data);
+
+                            // Use Header
+                            if data[0] == 0x02 {
+                                // Rumble
+                                if data[1] == 0x03 {
+                                    let effect_id = data[2] as i16;
+
+                                    let left = ((data[3] as f32 / 255f32) * 0xFFFF as f32).ceil() as u16;
+                                    let right = ((data[4] as f32 / 255f32) * 0xFFFF as f32).ceil() as u16;
+
+                                    if left > 0 || right > 0 {
+                                        steam_controller.add_rumble_effect(effect_id, RumbleEffect {
+                                            left_strength: left,
+                                            right_strength: right
+                                        });
+                                    } else {
+                                        steam_controller.remove_rumble_effect(effect_id);
+                                    }
+                                }
+                            }
                         }
                         OutputEvent::GetReport { id, report_number, report_type } => {
                             println!("get_report: (id: {id:#?}, report_number: {report_number:#?}, report_type: {report_type:#?})");
@@ -519,12 +541,12 @@ impl VirtualDualSenseController {
         let button_bytes = self.buttons.as_button_bytes();
 
         let gyro_x_bytes = self.gyro.0.to_le_bytes();
-        let gyro_y_bytes = self.gyro.1.to_le_bytes();
-        let gyro_z_bytes = self.gyro.2.to_le_bytes();
+        let gyro_y_bytes = self.gyro.2.to_le_bytes();
+        let gyro_z_bytes = (-self.gyro.1).to_le_bytes();
 
         let accel_x_bytes = self.accel.0.to_le_bytes();
-        let accel_y_bytes = self.accel.1.to_le_bytes();
-        let accel_z_bytes = self.accel.2.to_le_bytes();
+        let accel_y_bytes = self.accel.2.to_le_bytes();
+        let accel_z_bytes = (-self.accel.1).to_le_bytes();
 
         let touch_point_0_bytes = self.touch_points[0].as_bytes();
         let touch_point_1_bytes = self.touch_points[1].as_bytes();

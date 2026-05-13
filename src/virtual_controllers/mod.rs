@@ -3,10 +3,10 @@ use std::thread::JoinHandle;
 use bitflags::{bitflags, bitflags_match};
 use color_eyre::eyre;
 use evdevil::{ff, AbsInfo, Bus, InputId};
-use evdevil::event::{Abs, AbsEvent, EventKind, Key, KeyEvent, KeyState, Misc, MiscEvent, UinputCode};
+use evdevil::event::{Abs, AbsEvent, EventKind, ForceFeedbackCode, Key, KeyEvent, KeyState, Misc, MiscEvent, UinputCode};
 use evdevil::ff::EffectKind;
 use evdevil::uinput::{AbsSetup, UinputDevice};
-use crate::SteamControllerHid;
+use crate::{RumbleEffect, SteamControllerHid};
 use crate::virtual_controllers::dualsense::{DualsenseButtons, VirtualDualSenseController};
 
 pub mod dualsense;
@@ -39,7 +39,7 @@ impl VirtualController {
     }
 
     pub fn use_dualsense(&mut self) -> eyre::Result<()> {
-        self.dualsense_controller = Some(VirtualDualSenseController::new()?);
+        self.dualsense_controller = Some(VirtualDualSenseController::new(&self.steam_controller_hid)?);
 
         if self.evdev_controller.is_some() {
             self.evdev_controller = None;
@@ -371,7 +371,7 @@ impl EvdevController {
             steam_controller.clone(),
         );
         let ff_handle = thread::spawn(move || {
-            let (gamepad, steam_controller) = ff_params;
+            let (gamepad, mut steam_controller) = ff_params;
 
             loop {
                 for res in gamepad.events() {
@@ -379,16 +379,16 @@ impl EvdevController {
                     match event.kind() {
                         EventKind::Uinput(ev) => match ev.code() {
                             UinputCode::FF_UPLOAD => gamepad.ff_upload(&ev, |upload| {
-                                println!("FF_UPLOAD: {:?}", upload);
+                                // println!("FF_UPLOAD: {:?}", upload);
 
                                 let effect = upload.effect();
                                 let kind = effect.kind().unwrap();
                                 match kind {
                                     EffectKind::Rumble(rumble) => {
-                                        steam_controller.send_rumble(
-                                            rumble.strong_magnitude(),
-                                            rumble.weak_magnitude(),
-                                        ).unwrap();
+                                        steam_controller.add_rumble_effect(effect.id().raw(), RumbleEffect {
+                                            left_strength: rumble.strong_magnitude(),
+                                            right_strength: rumble.weak_magnitude(),
+                                        });
                                     }
                                     _ => {}
                                 }
@@ -396,9 +396,26 @@ impl EvdevController {
                                 Ok(())
                             }).unwrap(),
                             UinputCode::FF_ERASE => gamepad.ff_erase(&ev, |erase| {
-                                println!("FF_ERASE: {:?}", erase);
+                                // println!("FF_ERASE: {:?}", erase);
                                 Ok(())
                             }).unwrap(),
+                            _ => {
+                                println!("Unhandled event: {:?}", ev);
+                            }
+                        }
+                        EventKind::ForceFeedback(ff_event) => match ff_event.code() {
+                            Some(code) => {
+                                match code {
+                                    ForceFeedbackCode::ControlEffect(effect) => {
+                                        println!("ControlEffect: {:?}", effect);
+                                        let active = ff_event.raw_value();
+                                        if active == 0 {
+                                            steam_controller.remove_rumble_effect(effect.raw());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             _ => {}
                         }
                         _ => {}
