@@ -327,6 +327,8 @@ pub struct VirtualDualSenseController {
     buttons: DualsenseButtons,
     left_stick: (u8, u8),
     right_stick: (u8, u8),
+    left_trigger: u8,
+    right_trigger: u8,
     touch_points: [TouchPoint; 2],
 }
 
@@ -418,6 +420,8 @@ impl VirtualDualSenseController {
                 left_stick: (0, 0),
                 right_stick: (0, 0),
                 touch_points: [TouchPoint::new(); 2],
+                left_trigger: 0,
+                right_trigger: 0,
             }
         )
     }
@@ -428,6 +432,11 @@ impl VirtualDualSenseController {
         } else {
             self.buttons.remove(buttons);
         }
+    }
+
+    pub fn set_triggers(&mut self, left_trigger: u8, right_trigger: u8) {
+        self.left_trigger = left_trigger;
+        self.right_trigger = right_trigger;
     }
 
     pub fn set_sticks(&mut self, left_stick: JoystickXY, right_stick: JoystickXY) {
@@ -529,7 +538,7 @@ impl VirtualDualSenseController {
                 0x01, // Report ID
                 self.left_stick.0, self.left_stick.1, // Left Stick
                 self.right_stick.0, self.right_stick.1, // Right Stick
-                0x00, 0x00, // L2, R2
+                self.left_trigger, self.right_trigger, // L2, R2
                 self.sequence_number, // Sequence Number
                 button_bytes[0], button_bytes[1], button_bytes[2], button_bytes[3], // Buttons
                 0xac, 0x0a, 0xaf, 0x14, // Reserved 1

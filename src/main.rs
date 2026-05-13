@@ -33,7 +33,7 @@ fn main() -> eyre::Result<()> {
 
     for controller in controllers {
         let tx = tx.clone();
-        std::thread::spawn(move || handle_controller(controller, tx));
+        thread::spawn(move || handle_controller(controller, tx));
     }
 
     while daemons_running > 0 {
@@ -226,6 +226,7 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                 let mut v = VirtualController::new(&controller).unwrap();
 
                 v.use_dualsense().unwrap();
+                // v.use_evdev().unwrap();
 
                 virtual_controller = Some(v);
             }
@@ -251,13 +252,17 @@ fn handle_controller(controller: HidDevice, tx: Sender<DaemonState>) {
                     });
                 }
 
+                let left_trigger = i16_from_le_bytes_steam(&buf[6..8]).unwrap();
+                let right_trigger = i16_from_le_bytes_steam(&buf[8..10]).unwrap();
+                virtual_controller.send_trigger_events(left_trigger, right_trigger).unwrap();
+
                 let left_joystick_x = i16_from_le_bytes_steam(&buf[10..12]).unwrap();
                 let left_joystick_y = i16_from_le_bytes_steam(&buf[12..14]).unwrap();
                 let right_joystick_x = i16_from_le_bytes_steam(&buf[14..16]).unwrap();
                 let right_joystick_y = i16_from_le_bytes_steam(&buf[16..18]).unwrap();
 
-                let left_joystick = JoystickXY::from_steam_controller_stick_data((left_joystick_x, left_joystick_y));
-                let right_joystick = JoystickXY::from_steam_controller_stick_data((right_joystick_x, right_joystick_y));
+                let left_joystick = JoystickXY::from_steam_controller_stick_data((left_joystick_x, -left_joystick_y));
+                let right_joystick = JoystickXY::from_steam_controller_stick_data((right_joystick_x, -right_joystick_y));
                 virtual_controller.send_joystick_events(left_joystick, right_joystick).unwrap();
 
                 let left_pad_x = i16_from_le_bytes_steam(&buf[18..20]).unwrap();

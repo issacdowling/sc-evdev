@@ -58,6 +58,19 @@ impl VirtualController {
         Ok(())
     }
 
+    pub fn send_trigger_events(&mut self, left_trigger: i16, right_trigger: i16) -> eyre::Result<()> {
+        if let Some(evdev_controller) = self.evdev_controller.as_mut() {
+            evdev_controller.send_trigger_events(left_trigger, right_trigger)?;
+        } else if let Some(dualsense_controller) = self.dualsense_controller.as_mut() {
+            let left_trigger = ((left_trigger as f32 / i16::MAX as f32) * u8::MAX as f32).ceil() as u8;
+            let right_trigger = ((right_trigger as f32 / i16::MAX as f32) * u8::MAX as f32).ceil() as u8;
+
+            dualsense_controller.set_triggers(left_trigger, right_trigger);
+        }
+
+        Ok(())
+    }
+
     pub fn send_joystick_events(&mut self, left_stick: JoystickXY, right_stick: JoystickXY) -> eyre::Result<()> {
         if let Some(evdev_controller) = self.evdev_controller.as_mut() {
             let (left_stick_x, left_stick_y) = left_stick.as_steam_controller_stick_data();
@@ -82,8 +95,8 @@ impl VirtualController {
     ) -> eyre::Result<()> {
         if let Some(evdev_controller) = self.evdev_controller.as_mut() {
             evdev_controller.send_pad_events(
-                left_touchpad_x, left_touchpad_y, left_touchpad_pressure,
-                right_touchpad_x, right_touchpad_y, right_touchpad_pressure
+                left_touchpad_x, -left_touchpad_y, left_touchpad_pressure,
+                right_touchpad_x, -right_touchpad_y, right_touchpad_pressure
             )?;
         } else if let Some(dualsense_controller) = self.dualsense_controller.as_mut() {
             dualsense_controller.update_touchpad(left_touchpad_x, -left_touchpad_y, left_touchpad_pressure, 0);
@@ -165,15 +178,15 @@ impl JoystickXY {
 
     pub fn as_steam_controller_stick_data(&self) -> (i16, i16) {
         (
-            (self.x * i16::MAX as f32).round() as i16,
-            (self.y * i16::MAX as f32).round() as i16,
+            (self.x * i16::MAX as f32).ceil() as i16,
+            (self.y * i16::MAX as f32).ceil() as i16,
         )
     }
 
     pub fn as_dualsense_stick_data(&self) -> (u8, u8) {
         (
-            ((self.x + 0.5f32) * u8::MAX as f32) as u8,
-            ((self.y + 0.5f32) * u8::MAX as f32) as u8,
+            ((self.x * 0.5f32 + 0.5f32) * u8::MAX as f32) as u8,
+            ((self.y * 0.5f32 + 0.5f32) * u8::MAX as f32) as u8,
         )
     }
 }
@@ -442,12 +455,23 @@ impl EvdevController {
         Ok(())
     }
 
+    pub fn send_trigger_events(&mut self, left_trigger: i16, right_trigger: i16) -> eyre::Result<()> {
+        let trigger_events = vec![
+            *AbsEvent::new(Abs::HAT2X, left_trigger as i32),
+            *AbsEvent::new(Abs::HAT2Y, right_trigger as i32),
+        ];
+
+        self.gamepad.write(&trigger_events)?;
+
+        Ok(())
+    }
+
     pub fn send_joystick_events(&mut self, left_joystick_x: i16, left_joystick_y: i16, right_joystick_x: i16, right_joystick_y: i16) -> eyre::Result<()> {
         let axis_events = vec![
             *AbsEvent::new(Abs::X, left_joystick_x as i32),
-            *AbsEvent::new(Abs::Y, -left_joystick_y as i32),
+            *AbsEvent::new(Abs::Y, left_joystick_y as i32),
             *AbsEvent::new(Abs::RX, right_joystick_x as i32),
-            *AbsEvent::new(Abs::RY, -right_joystick_y as i32),
+            *AbsEvent::new(Abs::RY, right_joystick_y as i32),
         ];
 
         self.gamepad.write(&axis_events)?;
@@ -466,10 +490,10 @@ impl EvdevController {
     ) -> eyre::Result<()> {
         let pad_events = vec![
             *AbsEvent::new(Abs::HAT0X, left_pad_x as i32),
-            *AbsEvent::new(Abs::HAT0Y, -left_pad_y as i32),
+            *AbsEvent::new(Abs::HAT0Y, left_pad_y as i32),
             *AbsEvent::new(Abs::PRESSURE, left_pad_pressure as i32),
             *AbsEvent::new(Abs::HAT1X, right_pad_x as i32),
-            *AbsEvent::new(Abs::HAT1Y, -right_pad_y as i32),
+            *AbsEvent::new(Abs::HAT1Y, right_pad_y as i32),
             *AbsEvent::new(Abs::MT_PRESSURE, right_pad_pressure as i32),
         ];
 
