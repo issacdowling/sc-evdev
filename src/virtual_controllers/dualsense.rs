@@ -391,7 +391,7 @@ impl VirtualDualSenseController {
                         OutputEvent::Output { data } => {
                             println!("Output event received with data: {:?}", data);
 
-                            // Use Header
+                            // Usb Header
                             if data[0] == 0x02 {
                                 // Rumble
                                 if data[1] == 0x03 {
@@ -412,7 +412,7 @@ impl VirtualDualSenseController {
                             }
                         }
                         OutputEvent::GetReport { id, report_number, report_type } => {
-                            println!("get_report: (id: {id:#?}, report_number: {report_number:#?}, report_type: {report_type:#?})");
+                            println!("get_report: (id: {id:#?}, report_number: {report_number:02x?}, report_type: {report_type:#?})");
 
                             if report_number == 0x05 {
                                 device.write_get_report_reply(id, 0, CALIBRATION_INFO.to_vec()).unwrap();
@@ -423,7 +423,10 @@ impl VirtualDualSenseController {
                             }
                         }
                         OutputEvent::SetReport { id, report_number, report_type, data } => {
-                            println!("set_report: (id: {id:#?}, report_number: {report_number:#?}, report_type: {report_type:#?}, data: {data:#?})");
+                            println!("set_report: (id: {id:#?}, report_number: {report_number:02x?}, report_type: {report_type:#?}, data: {data:02x?})");
+
+                            // For now always respond with success
+                            device.write_set_report_reply(id, 0).unwrap();
                         }
                     }
                 }
