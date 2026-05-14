@@ -28,7 +28,7 @@ Supported Features for each "driver".
 | Buttons        | :white_check_mark: | :white_check_mark: |
 | Paddle Buttons | :white_check_mark: | :question:         |
 | Joysticks      | :white_check_mark: | :white_check_mark: |
-| Touchpads      | :white_check_mark: | :white_check_mark: |
+| Touchpads      | :white_check_mark: | :construction:     |
 | Gyro           | :white_check_mark: | :construction:     |
 | Accelerometer  | :white_check_mark: | :construction:     |
 | Rumble         | :construction:     | :construction:     |
