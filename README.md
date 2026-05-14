@@ -5,6 +5,7 @@ A WIP linux user-space "driver" for the Steam Controller (2026) that allows it t
 Not quite ready for real usage yet.
 
 TODO:
+- Steam Controller HID hiding.
 - GUI for configuration.
 - System tray icon for quick access to GUI and quick options.
 - distro packaging (Fedora, Ubuntu, AUR, Flatpak).
